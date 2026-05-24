@@ -148,7 +148,7 @@ def parse_address_cell(text: str) -> dict:
     return rec
 
 
-def parse_size_cell(text: str) -> float | None:
+def parse_size_cell(text: str):
     """Parse '實645呎' -> 645.0"""
     m = re.search(r"([\d,]+)\s*呎", text)
     if m:
@@ -156,7 +156,7 @@ def parse_size_cell(text: str) -> float | None:
     return None
 
 
-def parse_price_cell(text: str) -> tuple[float | None, float | None]:
+def parse_price_cell(text: str):
     """
     Parse '$593.8 萬元 @ $9,206' -> (5938000.0, 9206.0)
     Returns (price_hkd, price_per_sqft)

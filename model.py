@@ -73,11 +73,15 @@ def prepare_features(df: pd.DataFrame, remove_outliers: bool = False) -> tuple[p
     encoders["recent_date_threshold"] = df_recent["date"].min() if len(df_recent) > 0 else reference_date
     encoders["max_training_date"] = df["date"].max()
 
+    # Block × flat interaction
+    df["block_flat_enc"] = df["block_enc"] * df["flat_enc"]
+
     # Feature set: spatial + temporal + interactions
     feature_cols = [
         "block_enc",
         "floor",
         "flat_enc",
+        "block_flat_enc",
         "year",
         "month_sin",
         "month_cos",
@@ -232,7 +236,7 @@ def save_model(model: XGBRegressor, encoders: dict, metrics: dict = None) -> Non
     joblib.dump(encoders, ENCODERS_PATH)
 
 
-def load_model() -> tuple[XGBRegressor, dict] | tuple[None, None]:
+def load_model():
     if os.path.exists(MODEL_PATH) and os.path.exists(ENCODERS_PATH):
         model = joblib.load(MODEL_PATH)
         encoders = joblib.load(ENCODERS_PATH)
@@ -280,10 +284,13 @@ def predict_price(
     year_month_cos = year * month_cos
 
     # Build feature vector
+    block_enc = safe_encode(block_le, inputs.get("block", "Unknown"))
+    flat_enc = safe_encode(flat_le, inputs.get("flat", "Unknown"))
     features = pd.DataFrame([{
-        "block_enc": safe_encode(block_le, inputs.get("block", "Unknown")),
+        "block_enc": block_enc,
         "floor": floor,
-        "flat_enc": safe_encode(flat_le, inputs.get("flat", "Unknown")),
+        "flat_enc": flat_enc,
+        "block_flat_enc": block_enc * flat_enc,
         "year": year,
         "month_sin": month_sin,
         "month_cos": month_cos,
@@ -324,7 +331,7 @@ def confidence_interval(
     inputs: dict,
     encoders: dict,
     alpha: float = 0.9,
-) -> tuple[float, float] | None:
+):
     """
     Estimate a prediction interval using quantile XGBoost (lower and upper).
     Only feasible when the dataset has sufficient size (>= 50 rows).
@@ -356,10 +363,13 @@ def confidence_interval(
     year_month_sin = year * month_sin
     year_month_cos = year * month_cos
 
+    block_enc = safe_encode(block_le, inputs.get("block", "Unknown"))
+    flat_enc = safe_encode(flat_le, inputs.get("flat", "Unknown"))
     feature_row = pd.DataFrame([{
-        "block_enc": safe_encode(block_le, inputs.get("block", "Unknown")),
+        "block_enc": block_enc,
         "floor": floor,
-        "flat_enc": safe_encode(flat_le, inputs.get("flat", "Unknown")),
+        "flat_enc": flat_enc,
+        "block_flat_enc": block_enc * flat_enc,
         "year": year,
         "month_sin": month_sin,
         "month_cos": month_cos,
