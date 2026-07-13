@@ -80,15 +80,15 @@ with tab_data:
         with col_name:
             st.caption(f"屋苑：**{detected_name}** ｜ 成交頁：`{normalized_url}`")
         with col_link:
-            st.link_button("🔗 開啟連結", normalized_url, use_container_width=True)
+            st.link_button("🔗 開啟連結", normalized_url, width="stretch")
     except ValueError as err:
         st.error(str(err))
 
     col_load, col_rescrape = st.columns([2, 1])
     with col_load:
-        load_btn = st.button("📥 載入數據（使用快取）", use_container_width=True)
+        load_btn = st.button("📥 載入數據（使用快取）", width="stretch")
     with col_rescrape:
-        rescrape_btn = st.button("🔄 重新抓取數據", use_container_width=True)
+        rescrape_btn = st.button("🔄 重新抓取數據", width="stretch")
 
     st.markdown("**或上傳 CSV 檔案**（如抓取失敗，可手動上傳）")
     uploaded = st.file_uploader(
@@ -163,7 +163,7 @@ with tab_data:
         display_df = df.copy()
         if "price" in display_df.columns:
             display_df["price_萬"] = (display_df["price"] / 10000).round(1)
-        st.dataframe(display_df, use_container_width=True, height=400)
+        st.dataframe(display_df, width="stretch", height=400)
 
         if "date" in df.columns and "price" in df.columns:
             st.subheader("成交價格走勢")
@@ -182,7 +182,7 @@ with tab_data:
                 title="歷史成交價格",
             )
             fig.update_traces(marker=dict(size=6, opacity=0.7))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         csv_bytes = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
         st.download_button(
@@ -199,11 +199,13 @@ with tab_model:
     st.header("模型訓練")
 
     if st.session_state.model is None:
-        model, encoders = load_model()
+        model, encoders, load_error = load_model()
         if model is not None:
             st.session_state.model = model
             st.session_state.encoders = encoders
             st.info("已從磁碟載入之前訓練的模型。")
+        elif load_error:
+            st.warning(load_error)
 
     remove_outliers_checkbox = st.checkbox(
         "移除異常值（極端價格）",
@@ -216,7 +218,7 @@ with tab_model:
         help="同一單位若同時有「market」及「registry」紀錄，移除較早的「market」版本，避免重複計算。"
     )
 
-    train_btn = st.button("🚀 訓練模型", use_container_width=False)
+    train_btn = st.button("🚀 訓練模型", width="content")
 
     df = st.session_state.df
     if train_btn:
@@ -299,7 +301,7 @@ with tab_model:
             title="Gradient Boosting 特徵重要性",
             labels={"Importance": "重要性", "Feature": "特徵"},
         )
-        st.plotly_chart(fig_fi, use_container_width=True)
+        st.plotly_chart(fig_fi, width="stretch")
 
         st.subheader("實際 vs 預測成交價")
         ap_df = pd.DataFrame({
@@ -324,7 +326,7 @@ with tab_model:
                 name="完美預測線",
             )
         )
-        st.plotly_chart(fig_ap, use_container_width=True)
+        st.plotly_chart(fig_ap, width="stretch")
 
         st.subheader("預測價格時間序列")
         # Need to reconstruct dates from X_test features
@@ -367,7 +369,7 @@ with tab_model:
                     yaxis_title="價格（萬）",
                     hovermode="closest",
                 )
-                st.plotly_chart(fig_time, use_container_width=True)
+                st.plotly_chart(fig_time, width="stretch")
 
                 # Error over time chart
                 st.subheader("預測誤差隨時間變化")
@@ -416,7 +418,7 @@ with tab_model:
                     yaxis_title="誤差（萬）= 實際 - 預測",
                     hovermode="closest",
                 )
-                st.plotly_chart(fig_error, use_container_width=True)
+                st.plotly_chart(fig_error, width="stretch")
 
                 # Summary stats
                 avg_error = time_df["誤差（萬）"].mean()
@@ -486,7 +488,7 @@ with tab_predict:
                 index=3,  # April
             )
 
-        predict_btn = st.button("🔮 預測價格", type="primary", use_container_width=False)
+        predict_btn = st.button("🔮 預測價格", type="primary", width="content")
 
         if predict_btn:
             inputs = {
@@ -550,12 +552,12 @@ with tab_predict:
 
             col_clear, col_download = st.columns([1, 1])
             with col_clear:
-                if st.button("🗑️ 清空記錄", use_container_width=True):
+                if st.button("🗑️ 清空記錄", width="stretch"):
                     st.session_state.prediction_history = []
                     st.rerun()
 
             history_df = pd.DataFrame(st.session_state.prediction_history)
-            st.dataframe(history_df, use_container_width=True, height=300)
+            st.dataframe(history_df, width="stretch", height=300)
 
             with col_download:
                 csv_history = history_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
@@ -564,5 +566,5 @@ with tab_predict:
                     data=csv_history,
                     file_name=f"prediction_history_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv",
-                    use_container_width=True,
+                    width="stretch",
                 )

@@ -3,10 +3,15 @@ model.py — Feature engineering, model training, and price prediction
 for the HK property transaction dataset.
 """
 
+import json
+import os
+import sys
+
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
-import os
+import sklearn
+import xgboost
 from xgboost import XGBRegressor
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
@@ -14,6 +19,7 @@ from sklearn.model_selection import TimeSeriesSplit
 
 MODEL_PATH = "data/model.joblib"
 ENCODERS_PATH = "data/encoders.joblib"
+MODEL_METADATA_PATH = "data/model_metadata.json"
 
 
 def prepare_features(df: pd.DataFrame, remove_outliers: bool = False) -> tuple[pd.DataFrame, pd.Series, dict]:
@@ -163,6 +169,7 @@ def train_model(
             reg_lambda=3.0,
             random_state=random_state,
             tree_method='hist',
+            n_jobs=1,
             enable_categorical=False,
         )
         m.fit(X_tr, y_tr, verbose=False)
@@ -191,6 +198,7 @@ def train_model(
         reg_lambda=3.0,
         random_state=random_state,
         tree_method='hist',
+        n_jobs=1,
         enable_categorical=False,
     )
     model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
@@ -224,6 +232,19 @@ def train_model(
     return model, metrics
 
 
+def current_model_metadata() -> dict:
+    return {
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "sklearn_version": sklearn.__version__,
+        "xgboost_version": xgboost.__version__,
+    }
+
+
+def _model_metadata_matches(metadata: dict) -> bool:
+    current = current_model_metadata()
+    return all(metadata.get(key) == value for key, value in current.items())
+
+
 def save_model(model: XGBRegressor, encoders: dict, metrics: dict = None) -> None:
     os.makedirs("data", exist_ok=True)
     joblib.dump(model, MODEL_PATH)
@@ -234,14 +255,24 @@ def save_model(model: XGBRegressor, encoders: dict, metrics: dict = None) -> Non
         if "calibration_model" in metrics:
             encoders["calibration_model"] = metrics["calibration_model"]
     joblib.dump(encoders, ENCODERS_PATH)
+    with open(MODEL_METADATA_PATH, "w", encoding="utf-8") as f:
+        json.dump(current_model_metadata(), f, indent=2)
 
 
 def load_model():
-    if os.path.exists(MODEL_PATH) and os.path.exists(ENCODERS_PATH):
-        model = joblib.load(MODEL_PATH)
-        encoders = joblib.load(ENCODERS_PATH)
-        return model, encoders
-    return None, None
+    if not (os.path.exists(MODEL_PATH) and os.path.exists(ENCODERS_PATH)):
+        return None, None, None
+    if not os.path.exists(MODEL_METADATA_PATH):
+        return None, None, "找到舊版模型檔案，請重新訓練模型以符合目前套件版本。"
+
+    with open(MODEL_METADATA_PATH, "r", encoding="utf-8") as f:
+        metadata = json.load(f)
+    if not _model_metadata_matches(metadata):
+        return None, None, "模型檔案由不同 Python 或套件版本建立，請重新訓練模型。"
+
+    model = joblib.load(MODEL_PATH)
+    encoders = joblib.load(ENCODERS_PATH)
+    return model, encoders, None
 
 
 def predict_price(
@@ -391,6 +422,7 @@ def confidence_interval(
             subsample=0.85,
             random_state=42,
             tree_method='hist',
+            n_jobs=1,
         )
         xgb_q.fit(X, y, verbose=False)
         quantile_pred = float(xgb_q.predict(feature_row)[0])
