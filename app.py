@@ -3,6 +3,7 @@ app.py - Streamlit dashboard for HK Property Price Prediction.
 """
 
 import hashlib
+import math
 import os
 
 import pandas as pd
@@ -25,6 +26,56 @@ def cache_path_for_url(url: str) -> str:
     normalized = normalize_28hse_url(url)
     digest = hashlib.md5(normalized.encode("utf-8")).hexdigest()[:12]
     return os.path.join("data", f"transactions_{digest}.csv")
+
+
+def estimate_floor_premium(df: pd.DataFrame) -> dict | None:
+    required_cols = {"block", "flat", "floor", "price"}
+    if not required_cols.issubset(df.columns):
+        return None
+
+    premium_rows = []
+    clean_df = df.dropna(subset=list(required_cols)).copy()
+    clean_df["floor"] = pd.to_numeric(clean_df["floor"], errors="coerce")
+    clean_df["price"] = pd.to_numeric(clean_df["price"], errors="coerce")
+    clean_df = clean_df.dropna(subset=["floor", "price"])
+
+    for _, group in clean_df.groupby(["block", "flat"]):
+        floor_prices = group.groupby("floor", as_index=False)["price"].median()
+        if len(floor_prices) < 2 or floor_prices["floor"].nunique() < 2:
+            continue
+
+        lowest_floor_idx = floor_prices["floor"].idxmin()
+        highest_floor_idx = floor_prices["floor"].idxmax()
+        lowest_floor = float(floor_prices.loc[lowest_floor_idx, "floor"])
+        highest_floor = float(floor_prices.loc[highest_floor_idx, "floor"])
+        floor_delta = highest_floor - lowest_floor
+        if floor_delta == 0:
+            continue
+
+        lowest_price = float(floor_prices.loc[lowest_floor_idx, "price"])
+        highest_price = float(floor_prices.loc[highest_floor_idx, "price"])
+        premium_rows.append({"premium_per_floor": (highest_price - lowest_price) / floor_delta})
+
+    if not premium_rows:
+        return None
+
+    premium_series = pd.Series([row["premium_per_floor"] for row in premium_rows], dtype="float64")
+    mean_premium = premium_series.mean()
+    if len(premium_series) >= 2:
+        sem = premium_series.std(ddof=1) / math.sqrt(len(premium_series))
+        ci_margin = sem
+        ci_lower = mean_premium - ci_margin
+        ci_upper = mean_premium + ci_margin
+    else:
+        ci_lower = mean_premium
+        ci_upper = mean_premium
+
+    return {
+        "mean": mean_premium,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "n_groups": len(premium_series),
+    }
 
 
 st.set_page_config(
@@ -159,29 +210,100 @@ with tab_data:
             avg_price = df["price"].mean() / 10000 if "price" in df.columns else 0
             st.metric("平均成交價", f"{avg_price:.0f} 萬")
 
+        floor_premium = estimate_floor_premium(df)
+        if floor_premium:
+            st.markdown("**同座同室樓層溢價估算**")
+            fp1, fp2, fp3 = st.columns(3)
+            mean_wan = floor_premium["mean"] / 10000
+            lower_wan = floor_premium["ci_lower"] / 10000
+            upper_wan = floor_premium["ci_upper"] / 10000
+            with fp1:
+                st.metric("每高一層估計升幅", f"{mean_wan:+.1f} 萬")
+            with fp2:
+                st.metric("68% 信賴區間", f"{lower_wan:+.1f} 至 {upper_wan:+.1f} 萬")
+            with fp3:
+                st.metric("可比較同座同室組數", f"{floor_premium['n_groups']:,}")
+            st.caption("以同一座、同一室內不同樓層的成交中位價差估算，先計算每組每層價差，再取整體平均；信賴區間使用較窄的 68% 範圍。")
+        else:
+            st.caption("同座同室不同樓層的成交不足，暫時無法估算每層價格升幅。")
+
         st.subheader("成交紀錄表")
         display_df = df.copy()
         if "price" in display_df.columns:
             display_df["price_萬"] = (display_df["price"] / 10000).round(1)
         st.dataframe(display_df, width="stretch", height=400)
 
-        if "date" in df.columns and "price" in df.columns:
-            st.subheader("成交價格走勢")
-            chart_df = df.dropna(subset=["date", "price"]).copy()
+        if "date" in df.columns and "price_per_sqft" in df.columns:
+            st.subheader("成交呎價走勢")
+            chart_df = df.dropna(subset=["date", "price_per_sqft"]).copy()
             chart_df["date"] = pd.to_datetime(chart_df["date"])
-            chart_df["price_萬"] = chart_df["price"] / 10000
+            chart_df["price_per_sqft"] = pd.to_numeric(chart_df["price_per_sqft"], errors="coerce")
+            chart_df = chart_df.dropna(subset=["price_per_sqft"]).sort_values("date")
+            if "price" in chart_df.columns:
+                chart_df["price_萬"] = chart_df["price"] / 10000
+
+            hover_cols = ["floor", "flat", "size_sqft"]
+            if "price_萬" in chart_df.columns:
+                hover_cols.append("price_萬")
+            hover_data = hover_cols if all(c in chart_df.columns for c in hover_cols) else None
             fig = px.scatter(
                 chart_df,
                 x="date",
-                y="price_萬",
+                y="price_per_sqft",
                 color="block" if "block" in chart_df.columns else None,
-                hover_data=["floor", "flat", "size_sqft"] if all(
-                    c in chart_df.columns for c in ["floor", "flat", "size_sqft"]
-                ) else None,
-                labels={"price_萬": "成交價（萬）", "date": "成交日期"},
-                title="歷史成交價格",
+                hover_data=hover_data,
+                labels={
+                    "price_per_sqft": "成交呎價（HK$/平方呎）",
+                    "price_萬": "成交價（萬）",
+                    "date": "成交日期",
+                },
+                title="歷史成交呎價",
             )
             fig.update_traces(marker=dict(size=6, opacity=0.7))
+
+            if len(chart_df) >= 3:
+                trend_df = (
+                    chart_df.set_index("date")
+                    .resample("MS")["price_per_sqft"]
+                    .median()
+                    .dropna()
+                    .reset_index()
+                )
+                if len(trend_df) >= 3:
+                    window = min(6, max(3, len(trend_df) // 4))
+                    trend_df["smoothed_price_per_sqft"] = (
+                        trend_df["price_per_sqft"]
+                        .rolling(window=window, min_periods=1, center=True)
+                        .mean()
+                    )
+                    trend_name = f"整體呎價趨勢（{window}個月平滑）"
+                else:
+                    window = min(7, max(3, len(chart_df) // 5))
+                    trend_df = chart_df[["date", "price_per_sqft"]].copy()
+                    trend_df["smoothed_price_per_sqft"] = (
+                        trend_df["price_per_sqft"]
+                        .rolling(window=window, min_periods=1, center=True)
+                        .median()
+                    )
+                    trend_name = f"整體呎價趨勢（{window}筆成交平滑）"
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=trend_df["date"],
+                        y=trend_df["smoothed_price_per_sqft"],
+                        mode="lines",
+                        name=trend_name,
+                        line=dict(color="#22D3EE", width=4),
+                        hovertemplate="%{x|%Y-%m}<br>趨勢呎價：HK$ %{y:,.0f}/呎<extra></extra>",
+                    )
+                )
+
+            fig.update_layout(
+                legend_title_text="",
+                hovermode="x unified",
+                yaxis_tickprefix="HK$ ",
+                yaxis_tickformat=",.0f",
+            )
             st.plotly_chart(fig, width="stretch")
 
         csv_bytes = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
